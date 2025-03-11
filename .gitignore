@@ -1,11 +1,29 @@
-# Byte-compiled / optimized / DLL files
+# Celery task queue files
+celerybeat-schedule
+celerybeat.pid
 __pycache__/
-*.py[cod]
-*$py.class
+*.log
 
-# Virtual environment directories
+# Redis dump files
+dump.rdb
+
+# Python Bytecode
+*.pyc
+*.pyo
+
+# Environment Files
+.env
+*.env
+
+# Virtual Environments (if not already ignored)
 venv/
 .venv/
-env/
-ENV/
-.env
+
+# Streamlit Cache
+.streamlit/
+
+# Logs & Debugging Files
+logs/
+*.log
+*.out
+*.err
