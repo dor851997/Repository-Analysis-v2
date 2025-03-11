@@ -1,0 +1,36 @@
+# FastAPI for API
+fastapi==0.95.0
+
+# Uvicorn for running FastAPI server
+uvicorn==0.22.0
+
+# Streamlit for UI
+streamlit==1.43.1
+
+# Async HTTP requests
+aiohttp==3.11.13
+
+# Git handling (if using GitPython)
+GitPython==3.1.44
+
+# OpenAI API for embeddings & assistant
+openai==1.64.0
+
+# OpenTelemetry for logging & monitoring
+opentelemetry-api==1.30.0
+opentelemetry-sdk==1.30.0
+opentelemetry-exporter-otlp==1.30.0
+
+# Redis (if using for caching)
+redis==5.2.1
+
+# Celery (if using for background task processing)
+celery==5.4.0
+
+# Testing dependencies
+pytest==7.2.0
+pytest-asyncio==0.21.0
+httpx==0.23.3
+
+# reads key-value pairs from a .env file
+python-dotenv-1.0.1
