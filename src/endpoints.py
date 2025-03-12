@@ -5,16 +5,17 @@ This module sets up the FastAPI application to expose API endpoints
 for repository analysis.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import asyncio
 from celery.result import AsyncResult  # Import Celery result tracking
-from src.repo_manager import fetch_repo_contents_task  # Import Celery task
+from src.repo_manager import fetch_repo_contents_task, celery_app  # Ensure Celery task is imported
 from src.assistant import analyze_code_task  # Import Celery task
 from src.logging_setup import get_tracer
 from dotenv import load_dotenv
 import os
 import time  # Import time for logging execution time
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -22,6 +23,7 @@ load_dotenv()
 # Initialize FastAPI app
 app = FastAPI()
 tracer = get_tracer()
+logger = logging.getLogger(__name__)
 
 # Request model
 class RepoRequest(BaseModel):
@@ -56,8 +58,9 @@ async def analyze_repo(request: RepoRequest):
         backoff_time = 2  # Start with a 2-second delay
 
         for attempt in range(retry_attempts):
-            fetch_task = AsyncResult(fetch_repo_contents_task.request.id)  # Check fetch task status
-
+            # Retrieve the most recent fetch task from Celery
+            fetch_task_id = fetch_repo_contents_task.delay(request.repo_url).id
+            fetch_task = AsyncResult(fetch_task_id, app=celery_app)
             if fetch_task.ready():
                 if fetch_task.failed():
                     if attempt < retry_attempts - 1:
@@ -93,10 +96,29 @@ async def get_task_status(task_id: str):
     Returns:
         dict: Task status and result if completed.
     """
-    task_result = AsyncResult(task_id)
+    try:
+        task_result = AsyncResult(task_id, app=celery_app)  # Ensure correct Celery app reference
 
-    return {
-        "task_id": task_id,
-        "status": task_result.status,
-        "result": task_result.result if task_result.ready() else None
-    }
+        if task_result.backend is None:
+            logger.error(f"Task {task_id} could not be retrieved: Backend is disabled.")
+            raise HTTPException(status_code=500, detail="Celery result backend is not configured correctly.")
+
+        if task_result.state == "PENDING":
+            return {"task_id": task_id, "status": "PENDING", "result": None}
+
+        if task_result.state == "FAILURE":
+            logger.error(f"Task {task_id} failed: {task_result.result}")
+            return {"task_id": task_id, "status": "FAILURE", "result": str(task_result.result)}
+
+        return {
+            "task_id": task_id,
+            "status": task_result.state,
+            "result": task_result.result if task_result.successful() else None
+        }
+    except AttributeError as e:
+        logger.error(f"Task {task_id} retrieval failed due to missing result backend: {str(e)}")
+        raise HTTPException(status_code=500, detail="Celery task result backend is not properly configured.")
+    except Exception as e:
+        logger.error(f"Error fetching task status for {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error - Failed to retrieve task status.")
+

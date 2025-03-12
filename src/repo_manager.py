@@ -10,9 +10,14 @@ import aiohttp
 import redis
 import json
 import time
+import logging
 from dotenv import load_dotenv
 from opentelemetry import trace
 from celery import Celery
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -23,10 +28,19 @@ CACHE_EXPIRY = 86400  # 24 hours (in seconds)
 # Initialize Redis
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
-# Initialize Celery
-celery_app = Celery("tasks", broker="redis://localhost:6379/0")
+# Initialize Celery with Redis as the result backend
+from celery import Celery
 
-# OpenTelemetry Tracer
+celery_app = Celery(
+    "tasks",
+    broker="redis://localhost:6379/0",
+    backend="redis://localhost:6379/0",
+    include=["src.repo_manager"]  # Ensure Celery discovers tasks in this module
+)
+
+celery_app.autodiscover_tasks(["src"])
+
+# Initialize OpenTelemetry Tracer
 tracer = trace.get_tracer(__name__)
 
 @celery_app.task(bind=True)
@@ -40,7 +54,17 @@ def fetch_repo_contents_task(self, repo_url: str) -> dict:
     Returns:
         dict: Dictionary containing repo file paths and their contents.
     """
-    return asyncio.run(fetch_repo_contents(repo_url))
+    logger.info(f"Starting repository fetch task: {self.request.id} for {repo_url}")
+
+    try:
+        result = asyncio.run(fetch_repo_contents(repo_url))
+        self.update_state(state="SUCCESS", meta=result)  # Store task results
+        logger.info(f"Task {self.request.id} completed successfully.")
+        return result
+    except Exception as e:
+        logger.error(f"Task {self.request.id} failed: {str(e)}", exc_info=True)
+        self.update_state(state="FAILURE", meta={"error": str(e)})
+        return {"error": str(e)}
 
 async def fetch_repo_contents(repo_url: str) -> dict:
     """
@@ -52,15 +76,15 @@ async def fetch_repo_contents(repo_url: str) -> dict:
     Returns:
         dict: Dictionary containing repo file paths and their contents.
     """
-    with tracer.start_as_current_span("fetch_repo_contents"):
+    with tracer.start_as_current_span("fetch_repo_contents") as span:
         cache_key = f"repo_cache:{repo_url}"
         cached_data = redis_client.get(cache_key)
 
         if cached_data:
-            tracer.add_event("Cache hit")
+            span.add_event("Cache hit")
             return json.loads(cached_data)  # Return cached repo data
 
-        tracer.add_event("Cache miss, fetching from GitHub")
+        span.add_event("Cache miss, fetching from GitHub")
 
         repo_owner, repo_name = extract_repo_details(repo_url)
         if not repo_owner or not repo_name:
@@ -74,7 +98,7 @@ async def fetch_repo_contents(repo_url: str) -> dict:
                 start_time = time.time()
                 async with session.get(api_url, headers=headers) as response:
                     duration = time.time() - start_time
-                    tracer.add_event(f"GitHub API request took {duration:.2f} seconds")
+                    span.add_event(f"GitHub API request took {duration:.2f} seconds")
 
                     if response.status == 200:
                         file_data = await response.json()
@@ -90,14 +114,14 @@ async def fetch_repo_contents(repo_url: str) -> dict:
 
                         return repo_cache
                     elif response.status == 403:
-                        tracer.add_event("GitHub API rate limit exceeded")
+                        span.add_event("GitHub API rate limit exceeded")
                         return {"error": "GitHub API rate limit exceeded. Try again later."}
                     elif response.status == 404:
                         return {"error": "Repository not found. Check if the URL is correct."}
                     else:
                         return {"error": f"Unexpected error from GitHub API: {response.status}"}
             except Exception as e:
-                tracer.add_event(f"Exception occurred: {str(e)}")
+                span.add_event(f"Exception occurred: {str(e)}")
                 return {"error": "An error occurred while fetching the repository."}
 
 async def process_repo_files(file_data, session):
